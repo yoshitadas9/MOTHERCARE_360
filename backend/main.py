@@ -1,11 +1,17 @@
+import time
+from prism import send_trace
 from fastapi import FastAPI
 from database import get_db
 from schemas import (
     PregnancyCreate,
     SymptomCreate,
     AppointmentCreate,
-    SymptomAnalysisRequest
+    SymptomAnalysisRequest,
+    HealthEventCreate
 )
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="MotherCare 360")
 
@@ -50,6 +56,17 @@ def create_tables():
             purpose TEXT
         )
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS health_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT,
+            description TEXT,
+            pregnancy_week INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+       )
+    """)
+
+    
 
     db.commit()
     db.close()
@@ -227,56 +244,143 @@ def get_appointments():
         })
 
     return result
+
+    
+
 @app.get("/timeline")
 def get_timeline():
 
     db = get_db()
-    cursor = db.cursor()
+
+    symptoms = db.execute("""
+        SELECT symptom, pregnancy_week, created_at
+        FROM symptoms
+    """).fetchall()
+
+    appointments = db.execute("""
+        SELECT doctor, date, purpose
+        FROM appointments
+    """).fetchall()
+
+    health_events = db.execute("""
+        SELECT event_type, description, pregnancy_week, created_at
+        FROM health_events
+    """).fetchall()
+
+    db.close()
 
     timeline = []
 
-    # Get symptoms
-    cursor.execute("""
-        SELECT symptom, pregnancy_week, created_at
-        FROM symptoms
-        ORDER BY created_at DESC
-    """)
-
-    symptoms = cursor.fetchall()
-
-    for symptom in symptoms:
+    # Symptoms
+    for item in symptoms:
         timeline.append({
             "type": "symptom",
-            "description": symptom[0],
-            "pregnancy_week": symptom[1],
-            "date": symptom[2]
+            "title": item[0],
+            "pregnancy_week": item[1],
+            "date": item[2]
         })
 
-    # Get appointments
-    cursor.execute("""
-        SELECT doctor, date, purpose
-        FROM appointments
-        ORDER BY date DESC
-    """)
-
-    appointments = cursor.fetchall()
-
-    for appointment in appointments:
+    # Appointments
+    for item in appointments:
         timeline.append({
             "type": "appointment",
-            "description": appointment[2],
-            "doctor": appointment[0],
-            "date": appointment[1]
+            "title": item[2],
+            "doctor": item[0],
+            "date": item[1]
         })
 
-    db.close()
+    # Health events
+    for item in health_events:
+        timeline.append({
+            "type": "health_event",
+            "title": item[0],
+            "description": item[1],
+            "pregnancy_week": item[2],
+            "date": item[3]
+        })
+
+    # Newest first
+    timeline.sort(
+        key=lambda x: x.get("date", ""),
+        reverse=True
+    )
 
     return timeline
 @app.post("/analyze-symptom")
 def analyze_symptom(data: SymptomAnalysisRequest):
 
+    start_time = time.time()
+
+    ai_response = (
+        f"Your symptom '{data.symptom}' has been received. "
+        "Please consult a qualified healthcare professional for "
+        "personalized medical advice."
+    )
+
+    latency_ms = int((time.time() - start_time) * 1000)
+
+    send_trace(
+        data.symptom,
+        ai_response,
+        data.pregnancy_week,
+        latency_ms
+    )
+
     return {
         "symptom": data.symptom,
         "pregnancy_week": data.pregnancy_week,
-        "message": "Symptom received for AI analysis"
+        "message": ai_response
     }
+@app.post("/health-events")
+def create_health_event(data: HealthEventCreate):
+
+    db = get_db()
+
+    db.execute(
+        """
+        INSERT INTO health_events
+        (event_type, description, pregnancy_week)
+        VALUES (?, ?, ?)
+        """,
+        (
+            data.event_type,
+            data.description,
+            data.pregnancy_week
+        )
+    )
+
+    db.commit()
+    db.close()
+
+    return {
+        "message": "Health event added successfully",
+        "event_type": data.event_type,
+        "description": data.description,
+        "pregnancy_week": data.pregnancy_week
+    }
+@app.get("/health-events")
+def get_health_events():
+
+    db = get_db()
+
+    events = db.execute(
+        """
+        SELECT id, event_type, description,
+               pregnancy_week, created_at
+        FROM health_events
+        ORDER BY created_at DESC
+        """
+    ).fetchall()
+
+    db.close()
+
+    return [
+        {
+            "id": event[0],
+            "event_type": event[1],
+            "description": event[2],
+            "pregnancy_week": event[3],
+            "created_at": event[4]
+        }
+        for event in events
+    ]

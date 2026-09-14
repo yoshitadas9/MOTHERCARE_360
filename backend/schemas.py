@@ -15,3 +15,7 @@ class AppointmentCreate(BaseModel):
 class SymptomAnalysisRequest(BaseModel):
     symptom: str
     pregnancy_week: int
+class HealthEventCreate(BaseModel):
+    event_type: str
+    description: str
+    pregnancy_week: int
